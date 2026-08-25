@@ -40,20 +40,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     if let usage = model.usage {
       let now = Date()
+      var sections: [[NSMenuItem]] = []
 
-      menu.addItem(disabled("5h: \(pct(usage.fiveHour.utilization))"))
-      if let resetsAt = usage.fiveHour.resetsAt, resetsAt > now {
-        menu.addItem(
-          disabled(
-            "Resets \(resetsAt.formatted(date: .omitted, time: .shortened)) (\(relative(until: resetsAt)))"
-          ))
+      if let fiveHour = usage.fiveHour {
+        var rows = [disabled("5h: \(fiveHour.utilization.percent)")]
+        if let resetsAt = fiveHour.resetsAt, resetsAt > now {
+          rows.append(
+            disabled(
+              "Resets \(resetsAt.formatted(date: .omitted, time: .shortened)) (\(relative(until: resetsAt)))"
+            ))
+        }
+        sections.append(rows)
       }
 
-      menu.addItem(.separator())
+      if let sevenDay = usage.sevenDay {
+        var rows = [disabled("7d: \(sevenDay.utilization.percent)")]
+        if let resetsAt = sevenDay.resetsAt {
+          rows.append(
+            disabled("Resets \(resetsAt.formatted(date: .abbreviated, time: .shortened))"))
+        }
+        sections.append(rows)
+      }
 
-      menu.addItem(disabled("7d: \(pct(usage.sevenDay.utilization))"))
-      if let resetsAt = usage.sevenDay.resetsAt {
-        menu.addItem(disabled("Resets \(resetsAt.formatted(date: .abbreviated, time: .shortened))"))
+      if let credits = usage.credits {
+        sections.append([disabled("Credits: \(credits.used) of \(credits.limit)")])
+      }
+
+      for (index, rows) in sections.enumerated() {
+        if index > 0 { menu.addItem(.separator()) }
+        rows.forEach(menu.addItem)
       }
     } else if let error = model.error {
       menu.addItem(disabled(error))
@@ -98,8 +113,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     alert.runModal()
   }
 
-  private func pct(_ v: Double) -> String { "\(Int(v.rounded()))%" }
-
   private func relative(until date: Date) -> String {
     let seconds = max(0, Int(date.timeIntervalSinceNow))
     let hours = seconds / 3600
@@ -116,18 +129,21 @@ enum Main {
         do {
           let usage = try await UsageFetcher().fetch()
           let now = Date()
-          let fh = usage.fiveHour
-          if let resetsAt = fh.resetsAt, resetsAt > now {
-            let minutes = Int(resetsAt.timeIntervalSince(now) / 60)
-            print("5 hour usage: \(Int(fh.utilization.rounded()))%")
-            print("resets at: \(resetsAt.formatted()) (in \(minutes) minutes)")
-          } else {
-            print("5 hour usage: N/A")
+          if let fh = usage.fiveHour {
+            print("5 hour usage: \(fh.utilization.percent)")
+            if let resetsAt = fh.resetsAt, resetsAt > now {
+              let minutes = Int(resetsAt.timeIntervalSince(now) / 60)
+              print("resets at: \(resetsAt.formatted()) (in \(minutes) minutes)")
+            }
           }
-          let sd = usage.sevenDay
-          print("7 day usage: \(Int(sd.utilization.rounded()))%")
-          if let resetsAt = sd.resetsAt {
-            print("resets at: \(resetsAt.formatted())")
+          if let sd = usage.sevenDay {
+            print("7 day usage: \(sd.utilization.percent)")
+            if let resetsAt = sd.resetsAt {
+              print("resets at: \(resetsAt.formatted())")
+            }
+          }
+          if let credits = usage.credits {
+            print("credits: \(credits.used) of \(credits.limit)")
           }
         } catch {
           fputs("Error: \(error.localizedDescription)\n", stderr)
@@ -142,4 +158,8 @@ enum Main {
     NSApplication.shared.delegate = delegate
     NSApplication.shared.run()
   }
+}
+
+extension Double {
+  var percent: String { "\(Int(rounded()))%" }
 }

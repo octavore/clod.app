@@ -5,9 +5,20 @@ struct UsageInfo: Sendable {
   let resetsAt: Date?
 }
 
+struct Credits: Sendable {
+  let used: Decimal
+  let limit: Decimal
+  let percent: Double
+}
+
 struct Usage: Sendable {
-  let fiveHour: UsageInfo
-  let sevenDay: UsageInfo
+  /// Utilization value shown in the menu bar
+  /// Defaults to five hour, fall back to credits
+  let utilization: Double
+
+  let fiveHour: UsageInfo?
+  let sevenDay: UsageInfo?
+  let credits: Credits?
 }
 
 enum FetchError: Error, LocalizedError {
@@ -38,6 +49,14 @@ struct UsageFetcher: Sendable {
 
     let (data, _) = try await URLSession.shared.data(for: request)
 
+    if let apiError = try? JSONDecoder().decode(ApiError.self, from: data) {
+      switch apiError.error.type {
+      case "rate_limit_error": throw FetchError.rateLimited
+      case "authentication_error": throw FetchError.authFailed
+      default: throw FetchError.badResponse(apiError.error.message)
+      }
+    }
+
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
     decoder.dateDecodingStrategy = .custom { dec in
@@ -48,20 +67,24 @@ struct UsageFetcher: Sendable {
     }
 
     guard let raw = try? decoder.decode(RawUsage.self, from: data) else {
-      if let apiError = try? JSONDecoder().decode(ApiError.self, from: data) {
-        switch apiError.error.type {
-        case "rate_limit_error": throw FetchError.rateLimited
-        case "authentication_error": throw FetchError.authFailed
-        default: break
-        }
-      }
       throw FetchError.badResponse(String(decoding: data, as: UTF8.self))
     }
 
-    return Usage(
-      fiveHour: UsageInfo(utilization: raw.fiveHour.utilization, resetsAt: raw.fiveHour.resetsAt),
-      sevenDay: UsageInfo(utilization: raw.sevenDay.utilization, resetsAt: raw.sevenDay.resetsAt)
-    )
+    let fiveHour = raw.fiveHour.map { UsageInfo(utilization: $0.utilization, resetsAt: $0.resetsAt) }
+    let sevenDay = raw.sevenDay.map { UsageInfo(utilization: $0.utilization, resetsAt: $0.resetsAt) }
+    let credits = raw.spend.flatMap { spend -> Credits? in
+      guard let used = spend.used, let limit = spend.limit, let percent = spend.percent else {
+        return nil
+      }
+      return Credits(used: used.value, limit: limit.value, percent: percent)
+    }
+
+    guard let utilization = fiveHour?.utilization ?? credits?.percent ?? sevenDay?.utilization
+    else {
+      throw FetchError.badResponse(String(decoding: data, as: UTF8.self))
+    }
+
+    return Usage(utilization: utilization, fiveHour: fiveHour, sevenDay: sevenDay, credits: credits)
   }
 
   private func bearerToken() throws -> String {
@@ -103,11 +126,25 @@ private struct ApiError: Decodable {
 }
 
 private struct RawUsage: Decodable {
-  let fiveHour: RawUsageInfo
-  let sevenDay: RawUsageInfo
+  let fiveHour: RawUsageInfo?
+  let sevenDay: RawUsageInfo?
+  let spend: RawSpend?
 }
 
 private struct RawUsageInfo: Decodable {
   let utilization: Double
   let resetsAt: Date?
+}
+
+private struct RawSpend: Decodable {
+  let used: RawAmount?
+  let limit: RawAmount?
+  let percent: Double?
+}
+
+private struct RawAmount: Decodable {
+  let amountMinor: Int
+  let exponent: Int
+
+  var value: Decimal { Decimal(amountMinor) / pow(10, exponent) }
 }
